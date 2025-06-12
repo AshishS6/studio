@@ -49,7 +49,7 @@ export default function CreateDsaPage() {
         name: data.name,
         email: data.email,
         status: data.status,
-        avatar: data.avatar || \`https://placehold.co/100x100.png?text=\${data.name.substring(0,2).toUpperCase()}\`, // Default placeholder
+        avatar: data.avatar || `https://placehold.co/100x100.png?text=${data.name.substring(0,2).toUpperCase()}`,
       };
       const result = await addDSA(newDsaData);
       if (result) {
