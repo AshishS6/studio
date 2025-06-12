@@ -2,7 +2,7 @@
 'use server';
 import { db } from '@/lib/firebase';
 import type { ReferralLink, DSA } from '@/types';
-import { collection, getDocs, addDoc, doc, getDoc, updateDoc, deleteDoc, query, where, runTransaction } from 'firebase/firestore';
+import { collection, getDocs, addDoc, doc, getDoc, updateDoc, deleteDoc, query, where, runTransaction, FieldValue } from 'firebase/firestore';
 import { getDSAById } from './dsaService'; // Assuming this function exists and works
 import { getProductById } from './productService'; // Assuming this function exists and works
 
@@ -51,8 +51,7 @@ export async function addReferralLink(linkData: Omit<ReferralLink, 'id' | 'click
     const codeQuerySnapshot = await getDocs(codeQuery);
     if (!codeQuerySnapshot.empty) {
       console.error("Referral code already exists:", linkData.code);
-      // Consider throwing a specific error or returning a flag
-      return null; 
+      return null;
     }
 
     const dsa = await getDSAById(linkData.dsaId);
@@ -72,12 +71,11 @@ export async function addReferralLink(linkData: Omit<ReferralLink, 'id' | 'click
       signups: 0,
       conversionRate: '0.00%',
       creationDate: new Date().toISOString(),
-      link: `https://example.com/refer/${linkData.code.toUpperCase()}` // Ensure consistent case for link
+      link: `https://example.com/refer/${linkData.code.toUpperCase()}`
     };
-    
+
     const dsaRef = doc(dsaCollectionRef, linkData.dsaId);
 
-    // Use a transaction to ensure atomicity when creating link and updating DSA
     const newDocRef = await runTransaction(db, async (transaction) => {
       const dsaDoc = await transaction.get(dsaRef);
       if (!dsaDoc.exists()) {
@@ -85,13 +83,10 @@ export async function addReferralLink(linkData: Omit<ReferralLink, 'id' | 'click
       }
       const currentActiveLinks = (dsaDoc.data() as DSA).activeLinks || 0;
       transaction.update(dsaRef, { activeLinks: currentActiveLinks + 1 });
-      
-      // Create the new referral link document within the transaction
-      // Firestore auto-generates an ID if you use addDoc.
-      // To use a transaction for creating a new document, you typically generate a new doc ref first.
-      const tempNewLinkRef = doc(collection(db, 'referralLinks')); // Get a new doc reference
+
+      const tempNewLinkRef = doc(collection(db, 'referralLinks'));
       transaction.set(tempNewLinkRef, newLinkObject);
-      return tempNewLinkRef; // Return the reference to the newly created link
+      return tempNewLinkRef;
     });
 
     return { id: newDocRef.id, ...newLinkObject };
@@ -105,7 +100,7 @@ export async function addReferralLink(linkData: Omit<ReferralLink, 'id' | 'click
 export async function updateReferralLink(id: string, linkData: Partial<Omit<ReferralLink, 'id'>>): Promise<boolean> {
   try {
     const linkRef = doc(referralLinksCollectionRef, id);
-    
+
     await runTransaction(db, async (transaction) => {
       const linkDoc = await transaction.get(linkRef);
       if (!linkDoc.exists()) {
@@ -115,32 +110,25 @@ export async function updateReferralLink(id: string, linkData: Partial<Omit<Refe
       const currentLinkData = linkDoc.data() as ReferralLink;
       const updatedData = { ...linkData };
 
-      // Recalculate conversion rate if clicks/signups changed
       const newClicks = linkData.clicks !== undefined ? linkData.clicks : currentLinkData.clicks;
       const newSignups = linkData.signups !== undefined ? linkData.signups : currentLinkData.signups;
 
       if (linkData.clicks !== undefined || linkData.signups !== undefined) {
         updatedData.conversionRate = newClicks > 0 ? ((newSignups / newClicks) * 100).toFixed(2) + '%' : '0.00%';
       }
-      
+
       transaction.update(linkRef, updatedData);
 
-      // If signups changed, update the DSA's total signups
       if (linkData.signups !== undefined && linkData.signups !== currentLinkData.signups && currentLinkData.dsaId) {
         const dsaRef = doc(dsaCollectionRef, currentLinkData.dsaId);
-        const dsaDoc = await transaction.get(dsaRef);
+        const dsaDoc = await transaction.get(dsaRef); // Get DSA doc within transaction
         if (dsaDoc.exists()) {
-          // To correctly update total signups, we need all links for that DSA
-          // This is complex within a single transaction without reading all links first.
-          // A simpler approach for now is to recalculate outside or use FieldValue.increment if applicable.
-          // For robustness, one might fetch all links for the DSA, sum signups, then update.
-          // Here's a simplified (potentially slightly racy without full recalculation) update:
           const dsaData = dsaDoc.data() as DSA;
-          const oldLinkSignups = currentLinkData.signups;
-          const newLinkSignups = newSignups;
-          const signupDifference = newLinkSignups - oldLinkSignups;
+          const signupDifference = newSignups - currentLinkData.signups;
           const dsaTotalSignups = (dsaData.signups || 0) + signupDifference;
           transaction.update(dsaRef, { signups: dsaTotalSignups });
+        } else {
+          console.warn(`DSA ${currentLinkData.dsaId} not found during signup update for link ${id}`);
         }
       }
     });
@@ -158,22 +146,19 @@ export async function deleteReferralLink(id: string): Promise<boolean> {
     await runTransaction(db, async (transaction) => {
       const linkDoc = await transaction.get(linkRef);
       if (!linkDoc.exists()) {
-        // If already deleted or never existed, consider it a success for idempotency
         console.warn(`Referral link ${id} not found for deletion, might have been already deleted.`);
-        return; 
+        return;
       }
       const linkToDelete = linkDoc.data() as ReferralLink;
 
       transaction.delete(linkRef);
 
-      // Update DSA's activeLinks count and potentially signups
       if (linkToDelete.dsaId) {
         const dsaRef = doc(dsaCollectionRef, linkToDelete.dsaId);
         const dsaDoc = await transaction.get(dsaRef);
         if (dsaDoc.exists()) {
           const dsaData = dsaDoc.data() as DSA;
           const newActiveLinks = Math.max(0, (dsaData.activeLinks || 0) - 1);
-          // When deleting a link, also subtract its signups from the DSA's total
           const newSignups = Math.max(0, (dsaData.signups || 0) - (linkToDelete.signups || 0));
           transaction.update(dsaRef, {
             activeLinks: newActiveLinks,
@@ -189,44 +174,43 @@ export async function deleteReferralLink(id: string): Promise<boolean> {
   }
 }
 
-// Function to simulate a click on a referral link
+// Function to record a click on a referral link
 export async function recordLinkClick(linkCode: string): Promise<boolean> {
   try {
     const q = query(referralLinksCollectionRef, where("code", "==", linkCode.toUpperCase()));
     const snapshot = await getDocs(q);
     if (snapshot.empty) {
-      console.warn("Link code not found for click:", linkCode);
+      console.warn("Link code not found for click recording:", linkCode);
       return false;
     }
     const linkDoc = snapshot.docs[0];
     const linkId = linkDoc.id;
-    const currentClicks = (linkDoc.data() as ReferralLink).clicks || 0;
-    
-    // We directly call updateReferralLink which handles transaction and conversion rate.
-    return await updateReferralLink(linkId, { clicks: currentClicks + 1 });
+    const currentData = linkDoc.data() as ReferralLink;
+    const currentClicks = currentData.clicks || 0;
 
+    return await updateReferralLink(linkId, { clicks: currentClicks + 1 });
   } catch (error) {
     console.error("Error recording link click:", error);
     return false;
   }
 }
 
-// Function to simulate a signup via a referral link
+// Function to record a signup via a referral link
 export async function recordLinkSignup(linkCode: string): Promise<boolean> {
-    try {
+  try {
     const q = query(referralLinksCollectionRef, where("code", "==", linkCode.toUpperCase()));
     const snapshot = await getDocs(q);
     if (snapshot.empty) {
-      console.warn("Link code not found for signup:", linkCode);
+      console.warn("Link code not found for signup recording:", linkCode);
       return false;
     }
     const linkDocSnapshot = snapshot.docs[0];
     const linkId = linkDocSnapshot.id;
-    const currentSignups = (linkDocSnapshot.data() as ReferralLink).signups || 0;
+    const currentData = linkDocSnapshot.data() as ReferralLink;
+    const currentSignups = currentData.signups || 0;
 
-    // We directly call updateReferralLink which handles transaction, conversion rate, and DSA total signups.
+    // updateReferralLink handles updating DSA's total signups as well
     return await updateReferralLink(linkId, { signups: currentSignups + 1 });
-
   } catch (error) {
     console.error("Error recording link signup:", error);
     return false;
