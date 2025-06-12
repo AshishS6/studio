@@ -1,9 +1,10 @@
+
 export interface DSA {
   id: string;
   name: string;
   email: string;
-  activeLinks: number;
-  signups: number;
+  activeLinks: number; // This will be managed by referral link additions/deletions
+  signups: number; // This will be managed by referral link updates
   status: 'Active' | 'Suspended';
   avatar?: string; 
 }
@@ -24,18 +25,18 @@ export interface ReferralLink {
   clicks: number;
   signups: number;
   conversionRate: string; 
-  creationDate: string; 
+  creationDate: string; // ISO String
   link: string;
 }
 
 export interface SignupTrendData {
-  date: string;
+  date: string; // e.g., 'Jan', 'Feb'
   count: number;
 }
 
 export interface PerformanceData {
-  name: string; 
-  value: number; 
+  name: string; // DSA name or Product name
+  value: number; // e.g., signups
 }
 
 export interface KPICardProps {
